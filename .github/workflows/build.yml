@@ -1,0 +1,26 @@
+name: Build TGTDeleg
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Compile tgtdeleg.exe
+      run: |
+        cl.exe /nologo /Ox /MT /W0 /GS- /DNDEBUG /Tp tgtdeleg.cpp /link /OUT:tgtdeleg.exe /SUBSYSTEM:CONSOLE /MACHINE:x64
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tgtdeleg.exe
+        path: tgtdeleg.exe
