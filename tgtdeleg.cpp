@@ -8,7 +8,6 @@
 #include <windows.h>
 #include <sspi.h>
 #include <ntsecapi.h>
-#include <winternl.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -78,6 +77,20 @@ typedef NTSTATUS (WINAPI *pLsaFreeReturnBuffer)(PVOID);
 typedef NTSTATUS (WINAPI *pLsaDeregisterLogonProcess)(HANDLE);
 
 // --- Stealth Class ---
+typedef struct _PEB_LDR_DATA {
+    BYTE Reserved1[8];
+    PVOID Reserved2[3];
+    LIST_ENTRY InMemoryOrderModuleList;
+} PEB_LDR_DATA, *PPEB_LDR_DATA;
+
+typedef struct _PEB {
+    BYTE Reserved1[2];
+    BYTE BeingDebugged;
+    BYTE Reserved2[1];
+    PVOID Reserved3[2];
+    PPEB_LDR_DATA Ldr;
+} PEB, *PPEB;
+
 typedef struct _MY_LDR_DATA_TABLE_ENTRY {
     LIST_ENTRY InLoadOrderLinks;
     LIST_ENTRY InMemoryOrderLinks;
