@@ -6,9 +6,9 @@
 
 #define SECURITY_WIN32
 #include <windows.h>
-#include <winternl.h>
 #include <sspi.h>
 #include <ntsecapi.h>
+#include <winternl.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
