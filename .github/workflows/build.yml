@@ -46,4 +46,3 @@ jobs:
         name: tgtdeleg-binaries
         path: |
           tgtdeleg_static.exe
-          tgtdeleg_dynamic.exe
