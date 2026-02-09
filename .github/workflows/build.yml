@@ -11,16 +11,19 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
 
-    - uses: ilammy/msvc-dev-cmd@v1
-
-    - name: Compile tgtdeleg.exe
+    - name: Install MinGW
       run: |
-        cl.exe /nologo /Ox /MT /W0 /GS- /DNDEBUG /Tp tgtdeleg.cpp /link /OUT:tgtdeleg.exe /SUBSYSTEM:CONSOLE /MACHINE:x64
+        sudo apt-get update
+        sudo apt-get install -y mingw-w64
+
+    - name: Compile TGTDeleg
+      run: |
+        make all
 
     - name: Delete Old Releases
       env:
@@ -35,10 +38,12 @@ jobs:
       shell: bash
       run: |
         TAG_NAME="v$(date +'%Y%m%d%H%M%S')"
-        gh release create "$TAG_NAME" tgtdeleg.exe --title "Release $TAG_NAME" --notes "Automated build from CI"
+        gh release create "$TAG_NAME" tgtdeleg_static.exe tgtdeleg_dynamic.exe --title "Release $TAG_NAME" --notes "Automated build from CI"
 
-    - name: Upload Artifact
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: tgtdeleg.exe
-        path: tgtdeleg.exe
+        name: tgtdeleg-binaries
+        path: |
+          tgtdeleg_static.exe
+          tgtdeleg_dynamic.exe
