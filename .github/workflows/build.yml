@@ -38,7 +38,7 @@ jobs:
       shell: bash
       run: |
         TAG_NAME="v$(date +'%Y%m%d%H%M%S')"
-        gh release create "$TAG_NAME" tgtdeleg_static.exe tgtdeleg_dynamic.exe --title "Release $TAG_NAME" --notes "Automated build from CI"
+        gh release create "$TAG_NAME" tgtdeleg_static.exe --title "Release $TAG_NAME" --notes "Automated build from CI"
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
