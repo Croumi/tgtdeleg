@@ -1,9 +1,10 @@
 CC = x86_64-w64-mingw32-g++
-CXXFLAGS = -O2 -fpermissive -fno-stack-protector -fno-ident \
+CXXFLAGS = -O2 -std=c++17 -fpermissive -nostartfiles -fno-exceptions -fno-rtti \
+           -fno-tree-loop-distribute-patterns -fno-stack-protector -fno-ident \
            -ffunction-sections -fdata-sections
 LDFLAGS_HARDEN = -Wl,--gc-sections -Wl,--no-insert-timestamp \
                  -Wl,--dynamicbase,--nxcompat,--high-entropy-va,--tsaware
-LIBS = -lole32 -loleaut32 -luuid -lwtsapi32 -lws2_32 -lshlwapi -lcrypt32 -lsecur32 -ladvapi32
+LIBS = -lsecur32 -ladvapi32 -lkernel32
 LDFLAGS_STATIC = -static -s $(LDFLAGS_HARDEN)
 LDFLAGS_DYNAMIC = -s $(LDFLAGS_HARDEN)
 SRC = tgtdeleg.cpp
@@ -21,7 +22,7 @@ tgtdeleg_static.exe: $(SRC)
 	@echo "[*] Building $@ (XOR: 0x$(XOR_KEY))"
 	@cp $(SRC) _tgtdeleg_temp.cpp
 	@sed -i 's/__XOR_KEY__/$(XOR_KEY)/g' _tgtdeleg_temp.cpp
-	$(CC) $(CXXFLAGS) -o $@ _tgtdeleg_temp.cpp $(LDFLAGS_STATIC) $(LIBS)
+	$(CC) $(CXXFLAGS) -o $@ _tgtdeleg_temp.cpp -Wl,-e,TgtDelegEntry $(LDFLAGS_STATIC) $(LIBS)
 	@rm _tgtdeleg_temp.cpp
 	$(SANITIZE)
 
@@ -30,7 +31,7 @@ tgtdeleg_dynamic.exe: $(SRC)
 	@echo "[*] Building $@ (XOR: 0x$(XOR_KEY))"
 	@cp $(SRC) _tgtdeleg_temp_dyn.cpp
 	@sed -i 's/__XOR_KEY__/$(XOR_KEY)/g' _tgtdeleg_temp_dyn.cpp
-	$(CC) $(CXXFLAGS) -o $@ _tgtdeleg_temp_dyn.cpp $(LDFLAGS_DYNAMIC) -static-libgcc -static-libstdc++ $(LIBS)
+	$(CC) $(CXXFLAGS) -o $@ _tgtdeleg_temp_dyn.cpp -Wl,-e,TgtDelegEntry $(LDFLAGS_DYNAMIC) $(LIBS)
 	@rm _tgtdeleg_temp_dyn.cpp
 	$(SANITIZE)
 
