@@ -9,8 +9,9 @@ LDFLAGS_STATIC = -static -s $(LDFLAGS_HARDEN)
 LDFLAGS_DYNAMIC = -s $(LDFLAGS_HARDEN)
 SRC = tgtdeleg.cpp
 
-# Build-time randomization: XOR key (0x10-0xFE, avoids 0x00 and low values)
-RAND_XOR_KEY = $(shell printf '%02X' $$(( (RANDOM % 239) + 16 )))
+# Generated XOR key header (random 16 bytes, unique per binary)
+XOR_KEY_HDR = xor_key.gen.h
+GEN_XOR_KEY = @python3 -c "import os; bs=os.urandom(16); print('constexpr unsigned char XKEY[] = {' + ','.join(f'0x{b:02x}' for b in bs) + '};'); print('constexpr size_t XKEY_LEN = sizeof(XKEY);')"
 
 # Post-build: sanitize PE headers (remove compiler fingerprints)
 SANITIZE = @python3 sanitize_pe.py $@
@@ -18,22 +19,18 @@ SANITIZE = @python3 sanitize_pe.py $@
 all: tgtdeleg_static.exe
 
 tgtdeleg_static.exe: $(SRC)
-	$(eval XOR_KEY := $(RAND_XOR_KEY))
-	@echo "[*] Building $@ (XOR: 0x$(XOR_KEY))"
-	@cp $(SRC) _tgtdeleg_temp.cpp
-	@sed -i 's/__XOR_KEY__/$(XOR_KEY)/g' _tgtdeleg_temp.cpp
-	$(CC) $(CXXFLAGS) -o $@ _tgtdeleg_temp.cpp -Wl,-e,TgtDelegEntry $(LDFLAGS_STATIC) $(LIBS)
-	@rm _tgtdeleg_temp.cpp
+	$(GEN_XOR_KEY) > $(XOR_KEY_HDR)
+	@echo "[*] Building $@..."
+	$(CC) $(CXXFLAGS) -o $@ $(SRC) -Wl,-e,TgtDelegEntry $(LDFLAGS_STATIC) $(LIBS)
 	$(SANITIZE)
 
 tgtdeleg_dynamic.exe: $(SRC)
-	$(eval XOR_KEY := $(RAND_XOR_KEY))
-	@echo "[*] Building $@ (XOR: 0x$(XOR_KEY))"
-	@cp $(SRC) _tgtdeleg_temp_dyn.cpp
-	@sed -i 's/__XOR_KEY__/$(XOR_KEY)/g' _tgtdeleg_temp_dyn.cpp
-	$(CC) $(CXXFLAGS) -o $@ _tgtdeleg_temp_dyn.cpp -Wl,-e,TgtDelegEntry $(LDFLAGS_DYNAMIC) $(LIBS)
-	@rm _tgtdeleg_temp_dyn.cpp
+	$(GEN_XOR_KEY) > $(XOR_KEY_HDR)
+	@echo "[*] Building $@..."
+	$(CC) $(CXXFLAGS) -o $@ $(SRC) -Wl,-e,TgtDelegEntry $(LDFLAGS_DYNAMIC) $(LIBS)
 	$(SANITIZE)
 
 clean:
-	rm -f tgtdeleg_static.exe tgtdeleg_dynamic.exe _tgtdeleg_temp*.cpp
+	rm -f tgtdeleg_static.exe tgtdeleg_dynamic.exe $(XOR_KEY_HDR)
+
+.PHONY: all clean

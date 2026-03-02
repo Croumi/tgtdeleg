@@ -12,14 +12,19 @@
 #include <utility>
 
 // --- No-CRT: provide memcpy/memset for compiler-generated calls ---
-extern "C" __attribute__((optimize("no-tree-loop-distribute-patterns")))
-void *memcpy(void *dst, const void *src, __SIZE_TYPE__ n) {
+#ifdef __GNUC__
+#define NO_LOOP_OPT __attribute__((optimize("no-tree-loop-distribute-patterns")))
+#else
+#define NO_LOOP_OPT
+#endif
+extern "C" NO_LOOP_OPT
+void *memcpy(void *dst, const void *src, size_t n) {
     BYTE *d = (BYTE *)dst; const BYTE *s = (const BYTE *)src;
     while (n--) *d++ = *s++;
     return dst;
 }
-extern "C" __attribute__((optimize("no-tree-loop-distribute-patterns")))
-void *memset(void *dst, int c, __SIZE_TYPE__ n) {
+extern "C" NO_LOOP_OPT
+void *memset(void *dst, int c, size_t n) {
     BYTE *d = (BYTE *)dst;
     while (n--) *d++ = (BYTE)c;
     return dst;
@@ -235,23 +240,27 @@ public:
 };
 
 // --- String Encryption ---
-constexpr char KEY = 0x__XOR_KEY__;
+// Multi-byte XOR key — regenerated randomly at each build by the Makefile / CI
+#if __has_include("xor_key.gen.h")
+#include "xor_key.gen.h"
+#else
+constexpr unsigned char XKEY[] = { 0x4a, 0xd7, 0x19, 0x83, 0xf1, 0x6c, 0xbe, 0x52, 0xa0, 0x3e, 0xe5, 0x78, 0x0d, 0x94, 0xc3, 0x27 };
+constexpr size_t XKEY_LEN = sizeof(XKEY);
+#endif
 
 template <size_t N, size_t... Is>
 constexpr auto encrypt(const char (&str)[N], std::index_sequence<Is...>) {
-    return std::array<char, N>{ (static_cast<char>(str[Is] ^ KEY))... };
+    return std::array<char, N>{ (static_cast<char>(str[Is] ^ XKEY[Is % XKEY_LEN]))... };
 }
 
 template <size_t N>
 struct XorStr {
     std::array<char, N> data;
-
-    constexpr XorStr(const char (&str)[N]) 
+    constexpr XorStr(const char (&str)[N])
         : data(encrypt(str, std::make_index_sequence<N>{})) {}
-
     __declspec(noinline) void decrypt(char* out) const {
         for (size_t i = 0; i < N; ++i) {
-            out[i] = data[i] ^ KEY;
+            out[i] = data[i] ^ XKEY[i % XKEY_LEN];
         }
     }
 };
