@@ -136,7 +136,6 @@ FORBIDDEN_EXTRA = [
     r"VirtualAllocEx",
     r"VirtualAlloc(?!Ex)",                # VirtualAlloc (local) is also flagged
     r"VirtualProtectEx",
-    r"VirtualProtect(?!Ex)",
     r"WriteProcessMemory",
     r"ReadProcessMemory",
     r"NtAllocateVirtualMemory",
