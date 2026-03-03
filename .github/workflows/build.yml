@@ -25,6 +25,9 @@ jobs:
       run: |
         make all
 
+    - name: Verify IAT cleanliness
+      run: python3 check_iat.py tgtdeleg_static.exe
+
     - name: Delete Old Releases
       env:
         GH_TOKEN: ${{ github.token }}
