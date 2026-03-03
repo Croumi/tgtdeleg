@@ -111,7 +111,6 @@ FORBIDDEN = [
     r"NetGroupAdd",
     r"DsGetDcName",
     r"NetApiBufferFree",
-    r"WinHttp",                           # catches all WinHttp* APIs
     # -- Crypto --
     r"CryptStringToBinary",
     # -- Named pipes --
@@ -127,7 +126,117 @@ FORBIDDEN = [
     r"DestroyEnvironmentBlock",
 ]
 
-_RE = [re.compile(p) for p in FORBIDDEN]
+# ---------------------------------------------------------------------------
+# Extended blocklist - suspicious APIs NOT currently used in our binaries,
+# but commonly flagged by EDR/AV.  Catches future regressions if a new
+# feature accidentally pulls in a hot API via static import.
+# ---------------------------------------------------------------------------
+FORBIDDEN_EXTRA = [
+    # -- Memory injection / shellcode --
+    r"VirtualAllocEx",
+    r"VirtualAlloc(?!Ex)",                # VirtualAlloc (local) is also flagged
+    r"VirtualProtectEx",
+    r"VirtualProtect(?!Ex)",
+    r"WriteProcessMemory",
+    r"ReadProcessMemory",
+    r"NtAllocateVirtualMemory",
+    r"NtProtectVirtualMemory",
+    r"NtWriteVirtualMemory",
+    r"NtReadVirtualMemory",
+    r"NtMapViewOfSection",
+    r"NtUnmapViewOfSection",
+    r"NtCreateSection",
+    # -- Thread injection / execution --
+    r"CreateRemoteThread",
+    r"NtCreateThreadEx",
+    r"RtlCreateUserThread",
+    r"QueueUserAPC",
+    r"NtQueueApcThread",
+    r"SetWindowsHookEx",
+    r"NtSetContextThread",
+    r"ResumeThread",                      # suspicious when combined with CREATE_SUSPENDED
+    # -- Process hollowing / ghosting --
+    r"NtUnmapViewOfSection",
+    r"NtResumeProcess",
+    r"NtSuspendProcess",
+    r"UpdateProcThreadAttribute",         # PPID spoofing via PROC_THREAD_ATTRIBUTE_PARENT_PROCESS
+    r"InitializeProcThreadAttributeList",
+    # -- Credential access --
+    r"LsaRegisterLogonProcess",
+    r"LsaEnumerateLogonSessions",
+    r"LsaGetLogonSessionData",
+    r"CredEnumerate",
+    r"CredRead[AW]?$",
+    r"SamConnect",
+    r"SamOpenDomain",
+    r"SamOpenUser",
+    r"SamQueryInformationUser",
+    r"MiniDumpWriteDump",
+    r"^DbgHelp",                          # dbghelp.dll functions (minidump)
+    # -- Registry hive direct access --
+    r"RegSaveKey",
+    r"RegLoadKey",
+    r"RegRestoreKey",
+    r"NtQueryKey",                        # EDR-hooked for boot key extraction
+    # -- Service manipulation --
+    r"CreateService[AW]",
+    r"OpenService[AW]",
+    r"StartService",
+    r"ControlService",
+    r"ChangeServiceConfig",
+    r"OpenSCManager",
+    # -- WMI execution --
+    r"IWbemLocator",
+    r"IWbemServices",
+    # -- Anti-debug / anti-analysis --
+    r"IsDebuggerPresent",
+    r"CheckRemoteDebuggerPresent",
+    r"NtQueryInformationProcess",
+    r"NtSetInformationThread",            # ThreadHideFromDebugger
+    # -- ETW tampering --
+    r"EtwEventWrite",
+    r"NtTraceEvent",
+    r"EtwEventRegister",
+    # -- AMSI bypass --
+    r"AmsiInitialize",
+    r"AmsiScanBuffer",
+    r"AmsiOpenSession",
+    # -- Dangerous process APIs --
+    r"TerminateProcess",
+    r"TerminateThread",
+    r"NtTerminateProcess",
+    # -- Token creation --
+    r"NtCreateToken",
+    r"ZwCreateToken",
+    r"LogonUser[AW]",
+    # -- Syscall / ntdll unhooking --
+    r"NtSystemDebugControl",
+    r"NtLoadDriver",
+    r"NtUnloadDriver",
+    # -- Keylogging / input capture --
+    r"GetAsyncKeyState",
+    r"GetKeyState",
+    r"SetWindowsHookEx",
+    r"GetRawInputData",
+    # -- Screen / clipboard capture --
+    r"BitBlt",
+    r"GetDC",
+    r"GetClipboardData",
+    r"OpenClipboard",
+    # -- Network / download --
+    r"URLDownloadToFile",
+    r"InternetOpen[AW]",
+    r"InternetConnect[AW]",
+    r"HttpOpenRequest[AW]",
+    r"HttpSendRequest[AW]",
+    r"InternetReadFile",
+    # -- Dangerous NT native --
+    r"NtCreateProcess",
+    r"NtCreateUserProcess",
+    r"RtlAdjustPrivilege",
+]
+
+_RE = [re.compile(p) for p in FORBIDDEN + FORBIDDEN_EXTRA]
 
 
 # ---------------------------------------------------------------------------
